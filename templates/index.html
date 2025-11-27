@@ -1,0 +1,384 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-lg-9 text-center mt-5">
+        <h1 class="display-1 mb-4" style="color: var(--text-white); font-family: 'Anton', sans-serif;">FIND THAT LINE.</h1>
+        <p class="mb-5 fs-5" style="color: var(--text-grey);">Search through thousands of iconic movie lines.</p>
+        
+        <form action="/" method="get" class="d-flex position-relative flex-column flex-md-row gap-3" id="search-form">
+            <div class="w-100 position-relative">
+                <input type="text" id="search-input" name="q" class="form-control form-control-lg" placeholder="Type a quote (e.g. 'I am your father')..." value="{{ query or '' }}" autocomplete="off" autofocus>
+                
+                <!-- Autocomplete Dropdown Container -->
+                <div id="suggestions-box" class="autocomplete-suggestions"></div>
+            </div>
+            <button type="submit" class="btn btn-primary px-5 py-3 py-md-0">SEARCH</button>
+        </form>
+    </div>
+</div>
+
+{% if query %}
+<div class="row justify-content-center mt-5 pb-5 mb-5"> <!-- Added padding bottom for sheet -->
+    <div class="col-lg-9">
+        <div class="d-flex justify-content-between align-items-end border-bottom border-secondary pb-2 mb-4">
+            <h5 class="text-uppercase mb-0" style="color: var(--text-grey); letter-spacing: 1px;">Results</h5>
+            <span class="small" style="color: var(--accent-yellow);">"{{ query }}"</span>
+        </div>
+        
+        {% if subtitles %}
+            <div class="list-group list-group-flush mb-5">
+                {% for sub in subtitles %}
+                <a href="{{ url_for('quote_detail', subtitle_id=sub.id) }}" class="result-link list-group-item list-group-item-action bg-transparent border-bottom border-secondary py-4 px-0">
+                    <figure class="mb-0">
+                        <blockquote class="blockquote">
+                            <p class="fs-4 fst-italic mb-3" style="color: var(--text-white);">"{{ sub.text }}"</p>
+                        </blockquote>
+                        <figcaption class="blockquote-footer mt-1 mb-0" style="color: var(--text-grey);">
+                            <span style="color: var(--accent-yellow); font-weight: bold; text-transform: uppercase;">{{ sub.movie.title }}</span> 
+                            <span class="mx-2">•</span>
+                            <span>{{ sub.movie.year }}</span>
+                            
+                            {% if sub.start_time %}
+                                <span class="ms-3 font-monospace" style="color: #888;">
+                                    {{ sub.start_time.split(',')[0] }}
+                                </span>
+                            {% endif %}
+                        </figcaption>
+                    </figure>
+                </a>
+                {% endfor %}
+            </div>
+        {% else %}
+            <div class="text-center py-5">
+                <h3 style="color: #333; font-family: 'Anton', sans-serif;">NO MATCHES FOUND</h3>
+                <p class="text-muted">Try checking your spelling or using fewer words.</p>
+            </div>
+        {% endif %}
+    </div>
+</div>
+{% endif %}
+
+<!-- SEARCH HISTORY BOTTOM SHEET (Shazam Style) -->
+<div id="history-sheet" class="history-sheet collapsed">
+    <!-- Clickable Header Area -->
+    <div class="sheet-header-area" id="sheet-toggle">
+        <div class="sheet-handle"></div>
+        <div class="container px-3">
+            <div class="d-flex justify-content-between align-items-center">
+                <h5 class="text-white mb-0 fw-bold" style="font-family: 'Anton'; letter-spacing: 1px; font-size: 1.5rem;">RECENT HISTORY</h5>
+                <button id="clear-history" class="btn btn-link btn-sm text-decoration-none p-0 z-index-high" style="color: var(--accent-yellow); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 1px;">Clear All</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Scrollable Content -->
+    <div id="history-content" class="history-content container px-3 mt-3">
+        <!-- Items injected via JS -->
+    </div>
+</div>
+
+<style>
+    /* --- SHAZAM-STYLE SHEET CSS --- */
+    .history-sheet {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        width: 100%;
+        background-color: #111; /* Deep dark background */
+        border-top-left-radius: 25px;
+        border-top-right-radius: 25px;
+        box-shadow: 0 -10px 50px rgba(0,0,0,0.95);
+        z-index: 1040; /* Above everything */
+        transition: height 0.4s cubic-bezier(0.19, 1, 0.22, 1); /* Smooth iOS-like easing */
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+        border-top: 1px solid #222;
+        max-height: 100vh; /* Allow full screen expansion */
+    }
+
+    .history-sheet.collapsed {
+        height: 85px; /* Height of just the header area */
+    }
+
+    .history-sheet.expanded {
+        height: 100vh; /* Full screen coverage */
+        border-radius: 0; /* Remove rounded corners when full screen */
+    }
+
+    .sheet-header-area {
+        padding-top: 12px;
+        padding-bottom: 20px;
+        background-color: #111;
+        cursor: pointer;
+        flex-shrink: 0;
+        position: relative;
+    }
+    
+    /* Add padding for safe area on mobile when expanded to top */
+    .history-sheet.expanded .sheet-header-area {
+        padding-top: 60px; /* More breathing room at top when full screen */
+    }
+
+    .sheet-handle {
+        width: 40px;
+        height: 5px;
+        background-color: #333;
+        border-radius: 10px;
+        margin: 0 auto 15px auto;
+    }
+
+    .history-content {
+        overflow-y: auto;
+        flex-grow: 1;
+        padding-bottom: 40px;
+        opacity: 0;
+        transition: opacity 0.2s ease;
+        /* Hide scrollbar for cleaner look */
+        -ms-overflow-style: none;
+        scrollbar-width: none;
+    }
+    .history-content::-webkit-scrollbar { display: none; }
+
+    /* Show content only when expanded to prevent clutter in peek mode */
+    .history-sheet.expanded .history-content {
+        opacity: 1;
+        transition-delay: 0.1s;
+    }
+    
+    /* History Cards */
+    .history-card {
+        display: flex;
+        align-items: center;
+        padding: 15px;
+        margin-bottom: 12px;
+        background-color: #1a1a1a;
+        border-radius: 12px;
+        cursor: pointer;
+        transition: transform 0.1s, background-color 0.2s;
+    }
+    .history-card:active {
+        transform: scale(0.98);
+        background-color: #222;
+    }
+    
+    .history-icon-box {
+        width: 50px;
+        height: 50px;
+        background-color: #252525;
+        border-radius: 8px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin-right: 15px;
+        flex-shrink: 0;
+    }
+    
+    .history-info {
+        flex-grow: 1;
+        overflow: hidden;
+    }
+    
+    .history-title {
+        color: #fff;
+        font-weight: 600;
+        font-size: 1rem;
+        margin-bottom: 2px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    
+    .history-sub {
+        color: #777;
+        font-size: 0.85rem;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    /* --- LOGO OVERRIDE --- */
+    /* Reduces the inner text size to fit neatly in the Q */
+    .brand-text-inner {
+        font-size: 0.5rem !important;
+        top: 26px !important; /* Adjust position slightly if needed */
+    }
+
+    /* Ensure content isn't hidden behind sheet */
+    body { padding-bottom: 100px; }
+</style>
+
+<script>
+    const searchForm = document.getElementById('search-form');
+    const searchInput = document.getElementById('search-input');
+    const suggestionsBox = document.getElementById('suggestions-box');
+    const loader = document.getElementById('search-loader');
+    const historySheet = document.getElementById('history-sheet');
+    const historyContent = document.getElementById('history-content');
+    const sheetToggle = document.getElementById('sheet-toggle');
+    const clearHistoryBtn = document.getElementById('clear-history');
+
+    function triggerPageTransition(targetUrl) {
+        document.body.classList.add('page-exit-active');
+        setTimeout(() => { window.location.href = targetUrl; }, 400); 
+    }
+
+    // --- SEARCH HISTORY LOGIC ---
+    function saveSearch(item) {
+        if(!item) return;
+        
+        let history = JSON.parse(localStorage.getItem('quoteSearchHistory') || '[]');
+        
+        // Construct object if simple string passed
+        const historyItem = typeof item === 'string' 
+            ? { type: 'text', value: item, display: item, sub: 'Search Term' } 
+            : { type: 'quote', value: item.id, display: item.movie, sub: `"${item.text.substring(0, 40)}..."` };
+
+        // Remove duplicate (by display text)
+        history = history.filter(h => h.display !== historyItem.display);
+        
+        history.unshift(historyItem);
+        if(history.length > 20) history.pop();
+        localStorage.setItem('quoteSearchHistory', JSON.stringify(history));
+        
+        // Refresh view if open
+        renderHistory();
+    }
+
+    function renderHistory() {
+        let history = JSON.parse(localStorage.getItem('quoteSearchHistory') || '[]');
+        
+        if (history.length === 0) {
+            historyContent.innerHTML = '<div class="text-center text-muted mt-4">No recent history</div>';
+            return;
+        }
+
+        historyContent.innerHTML = '';
+        history.forEach(item => {
+            // FIX: Handle legacy string data that causes "undefined function" error
+            let displayItem = item;
+            if (typeof item === 'string') {
+                displayItem = { type: 'text', value: item, display: item, sub: 'Search Term' };
+            }
+
+            const div = document.createElement('div');
+            div.className = 'history-card';
+            
+            // Determine icon based on type
+            const icon = displayItem.type === 'quote' ? 'bi-quote' : 'bi-search';
+            const iconColor = displayItem.type === 'quote' ? 'var(--accent-yellow)' : '#777';
+            
+            div.innerHTML = `
+                <div class="history-icon-box">
+                    <i class="bi ${icon}" style="font-size: 1.5rem; color: ${iconColor};"></i>
+                </div>
+                <div class="history-info">
+                    <div class="history-title">${displayItem.display}</div>
+                    <div class="history-sub">${displayItem.sub}</div>
+                </div>
+                <i class="bi bi-chevron-right text-muted ms-2"></i>
+            `;
+            
+            div.addEventListener('click', function(e) {
+                e.stopPropagation(); // Prevent sheet toggle
+                if (displayItem.type === 'quote') {
+                    triggerPageTransition(`/quote/${displayItem.value}`);
+                } else {
+                    searchInput.value = displayItem.value;
+                    searchForm.submit();
+                }
+            });
+            historyContent.appendChild(div);
+        });
+    }
+
+    // Toggle Logic
+    sheetToggle.addEventListener('click', function(e) {
+        // Don't toggle if clicking the clear button
+        if(e.target === clearHistoryBtn) return;
+        
+        historySheet.classList.toggle('collapsed');
+        historySheet.classList.toggle('expanded');
+    });
+
+    // Clear History
+    clearHistoryBtn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        if(confirm('Clear search history?')) {
+            localStorage.removeItem('quoteSearchHistory');
+            renderHistory();
+        }
+    });
+
+    // Initialize
+    renderHistory();
+
+    searchForm.addEventListener('submit', function() {
+        saveSearch(searchInput.value);
+        loader.style.display = 'flex';
+    });
+
+    document.querySelectorAll('.result-link').forEach(link => {
+        link.addEventListener('click', function(e) {
+            e.preventDefault();
+            triggerPageTransition(this.href);
+        });
+    });
+
+    // --- AUTOCOMPLETE LOGIC ---
+    let debounceTimer;
+    searchInput.addEventListener('input', function() {
+        const query = this.value;
+        clearTimeout(debounceTimer);
+        
+        if (query.length < 2) {
+            suggestionsBox.style.display = 'none';
+            return;
+        }
+
+        debounceTimer = setTimeout(() => {
+            fetch(`/api/autocomplete?q=${encodeURIComponent(query)}`)
+                .then(response => response.json())
+                .then(data => {
+                    suggestionsBox.innerHTML = '';
+                    suggestionsBox.style.display = 'none'; 
+
+                    if (data.length > 0) {
+                        setTimeout(() => {
+                            suggestionsBox.style.display = 'block';
+                            data.forEach((item, index) => {
+                                const div = document.createElement('div');
+                                div.className = 'autocomplete-item';
+                                div.style.animationDelay = `${index * 50}ms`;
+                                
+                                div.innerHTML = `
+                                    <div class="d-flex justify-content-between align-items-center">
+                                        <span>
+                                            <span style="color: var(--accent-yellow); font-weight: bold;">${item.movie}</span> 
+                                            <span class="small text-muted">(${item.year})</span>
+                                        </span>
+                                    </div>
+                                    <div class="small mt-1" style="color: #ccc;">"${item.text.substring(0, 60)}..."</div>
+                                `;
+                                
+                                div.addEventListener('click', function() {
+                                    // Save rich object to history
+                                    saveSearch(item);
+                                    triggerPageTransition(`/quote/${item.id}`);
+                                });
+                                suggestionsBox.appendChild(div);
+                            });
+                        }, 10);
+                    }
+                });
+        }, 300);
+    });
+
+    document.addEventListener('click', function(e) {
+        if (e.target !== searchInput && e.target !== suggestionsBox) {
+            suggestionsBox.style.display = 'none';
+        }
+    });
+</script>
+{% endblock %}

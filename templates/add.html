@@ -1,0 +1,55 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<div class="row justify-content-center mt-3 mt-lg-5">
+    <div class="col-md-8 col-lg-6">
+        <h2 class="text-center mb-4 mb-lg-5">UPLOAD SUBTITLE FILE</h2>
+        
+        <form method="POST" enctype="multipart/form-data" class="p-4 p-lg-5" style="background-color: var(--bg-dark-grey); border: 1px solid #333;">
+            
+            <!-- Movie Info -->
+            <div class="mb-4">
+                <label class="form-label small text-uppercase fw-bold" style="color: var(--accent-yellow);">Movie Title</label>
+                <input type="text" name="title" class="form-control" required placeholder="THE GODFATHER">
+            </div>
+            
+            <div class="mb-4">
+                <label class="form-label small text-uppercase fw-bold" style="color: var(--accent-yellow);">Year</label>
+                <input type="number" name="year" class="form-control" placeholder="1972" required>
+            </div>
+            
+            <!-- File Upload -->
+            <div class="mb-5">
+                <label class="form-label small text-uppercase fw-bold" style="color: var(--accent-yellow);">Subtitle File (.srt)</label>
+                <div class="position-relative">
+                    <input type="file" name="subtitle_file" id="srtFile" class="form-control" accept=".srt" required>
+                    <div class="form-text mt-2" style="color: #666;">
+                        <i class="bi bi-info-circle me-1"></i> Our engine will parse this file and add thousands of quotes instantly.
+                    </div>
+                </div>
+            </div>
+            
+            <div class="d-grid">
+                <button type="submit" class="btn btn-primary btn-lg" id="uploadBtn">
+                    <i class="bi bi-cloud-upload me-2"></i> DIGEST & UPLOAD
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+    // Simple Client-Side Validation
+    const fileInput = document.getElementById('srtFile');
+    const uploadBtn = document.getElementById('uploadBtn');
+
+    fileInput.addEventListener('change', function() {
+        const filePath = this.value;
+        const allowedExtensions = /(\.srt)$/i;
+        if (!allowedExtensions.exec(filePath)) {
+            alert('Please upload a file with .srt extension only.');
+            this.value = '';
+        }
+    });
+</script>
+{% endblock %}
