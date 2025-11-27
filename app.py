@@ -8,7 +8,7 @@ from srt_parser import parse_srt
 import logging
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address 
-from flask_apscheduler import APScheduler
+
 from fetch_from_api import fetch_all_movies 
 
 load_dotenv()
@@ -34,17 +34,7 @@ limiter = Limiter(
     storage_uri="memory://"
 )
 
-# Scheduler
-scheduler = APScheduler()
-app.config['SCHEDULER_API_ENABLED'] = True
 
-@scheduler.task('interval', id='fetch_subtitles_job', hours=24)
-def scheduled_fetch():
-    with app.app_context():
-        fetch_all_movies()
-
-scheduler.init_app(app)
-scheduler.start()
 
 # --- Models ---
 class Movie(db.Model):
