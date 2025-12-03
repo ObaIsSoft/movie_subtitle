@@ -411,12 +411,13 @@
         }
     });
 </script>
-<script src="{{ url_for('static', filename='js/audio_visualizer.js') }}"></script>
-{% endblock %}
-
 <!-- Audio Recording Overlay -->
 <div id="audio-overlay" class="audio-overlay">
     <button id="close-overlay" class="close-overlay"><i class="bi bi-x-lg"></i></button>
     <canvas id="visualizer-canvas"></canvas>
+    <div id="live-transcript" class="live-transcript"></div>
     <div id="recording-status" class="recording-status">Listening...</div>
 </div>
+
+<script src="{{ url_for('static', filename='js/audio_visualizer.js') }}"></script>
+{% endblock %}

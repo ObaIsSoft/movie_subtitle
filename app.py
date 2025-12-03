@@ -132,14 +132,23 @@ def transcribe_audio():
         return jsonify({'error': 'No selected file'}), 400
 
     try:
-        # Save to a temporary file because OpenAI API needs a file-like object with a name/path
-        # or a proper file object. Flask's FileStorage can sometimes be passed directly, 
-        # but saving to temp is safer for format detection.
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as temp_audio:
+        # Save to a temporary file
+        suffix = ".webm"
+        if audio_file.filename.endswith('.mp4'): suffix = ".mp4"
+        
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_audio:
             audio_file.save(temp_audio.name)
             temp_path = temp_audio.name
+        
+        file_size = os.path.getsize(temp_path)
+        logger.info(f"Received audio file: {audio_file.filename}, Size: {file_size} bytes, Path: {temp_path}")
+
+        if file_size == 0:
+            os.remove(temp_path)
+            return jsonify({'error': 'Empty audio file'}), 400
 
         with open(temp_path, "rb") as audio_file_obj:
+            logger.info("Sending to OpenAI Whisper...")
             transcript = openai_client.audio.transcriptions.create(
                 model="whisper-1", 
                 file=audio_file_obj
@@ -149,13 +158,17 @@ def transcribe_audio():
         os.remove(temp_path)
         
         text = transcript.text.strip()
+        logger.info(f"Transcription success: '{text}'")
+        
         # Remove trailing punctuation for better search
         if text.endswith('.'): text = text[:-1]
         
         return jsonify({'text': text})
 
     except Exception as e:
-        logger.error(f"Transcription error: {e}")
+        logger.error(f"Transcription error: {str(e)}", exc_info=True)
+        if 'temp_path' in locals() and os.path.exists(temp_path):
+            os.remove(temp_path)
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/export_movies')
