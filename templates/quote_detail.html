@@ -78,15 +78,30 @@
                 Availability</h6>
 
             {% if watch_link %}
-            <a href="{{ watch_link }}" target="_blank" class="btn btn-primary w-100 py-3">
-                WATCH NOW
+            <a href="{{ watch_link }}" target="_blank" class="btn btn-primary w-100 py-3 mb-2">
+                WATCH NOW (TMDB)
             </a>
-            <p class="small mt-2 mb-0 text-end" style="color: #444;">
-                Data provided by TMDb
-            </p>
-            {% else %}
+            {% endif %}
+
+            {% if justwatch_link %}
+            <a href="{{ justwatch_link }}" target="_blank" class="btn btn-outline-warning w-100 py-3 mb-2">
+                WATCH ON JUSTWATCH
+            </a>
+            {% endif %}
+
+            {% if google_watchlist_link %}
+            <a href="{{ google_watchlist_link }}" target="_blank" class="btn btn-outline-light w-100 py-3">
+                <i class="bi bi-bookmark-plus me-2"></i> ADD TO WATCHLIST
+            </a>
+            {% endif %}
+
+            {% if not watch_link and not justwatch_link and not google_watchlist_link %}
             <p class="mb-0 text-center" style="color: #666;">
                 <i class="bi bi-x-circle me-2"></i> Not currently available.
+            </p>
+            {% else %}
+            <p class="small mt-2 mb-0 text-end" style="color: #444;">
+                Data provided by TMDb, JustWatch & Google
             </p>
             {% endif %}
         </div>

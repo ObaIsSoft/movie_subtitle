@@ -1,4 +1,5 @@
 import os
+import tempfile
 from flask import Flask, render_template, request, redirect, url_for, flash, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import func
@@ -8,6 +9,7 @@ from srt_parser import parse_srt
 import logging
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address 
+from openai import OpenAI 
 
 from fetch_from_api import fetch_all_movies 
 
@@ -33,6 +35,9 @@ limiter = Limiter(
     default_limits=["200 per day", "50 per hour"],
     storage_uri="memory://"
 )
+
+# OpenAI Client
+openai_client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
 
 
 
@@ -92,6 +97,8 @@ def quote_detail(subtitle_id):
                          prev_subtitle=prev_subtitle,
                          next_subtitle=next_subtitle,
                          watch_link=tmdb_data.get('watch_link'),
+                         justwatch_link=tmdb_data.get('justwatch_link'),
+                         google_watchlist_link=tmdb_data.get('google_watchlist_link'),
                          tmdb_id=tmdb_data.get('tmdb_id'),
                          poster_url=tmdb_data.get('poster_url'))
 
@@ -113,6 +120,43 @@ def autocomplete():
             'year': movie.year
         })
     return jsonify(suggestions)
+
+@app.route('/api/transcribe', methods=['POST'])
+@limiter.limit("10 per hour") # Strict limit for API costs
+def transcribe_audio():
+    if 'audio' not in request.files:
+        return jsonify({'error': 'No audio file provided'}), 400
+    
+    audio_file = request.files['audio']
+    if audio_file.filename == '':
+        return jsonify({'error': 'No selected file'}), 400
+
+    try:
+        # Save to a temporary file because OpenAI API needs a file-like object with a name/path
+        # or a proper file object. Flask's FileStorage can sometimes be passed directly, 
+        # but saving to temp is safer for format detection.
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as temp_audio:
+            audio_file.save(temp_audio.name)
+            temp_path = temp_audio.name
+
+        with open(temp_path, "rb") as audio_file_obj:
+            transcript = openai_client.audio.transcriptions.create(
+                model="whisper-1", 
+                file=audio_file_obj
+            )
+        
+        # Cleanup
+        os.remove(temp_path)
+        
+        text = transcript.text.strip()
+        # Remove trailing punctuation for better search
+        if text.endswith('.'): text = text[:-1]
+        
+        return jsonify({'text': text})
+
+    except Exception as e:
+        logger.error(f"Transcription error: {e}")
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/export_movies')
 def export_movies():

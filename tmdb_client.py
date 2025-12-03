@@ -69,8 +69,21 @@ def get_movie_data(title, year=None, country_code="NG"):
     # Construct full poster URL
     poster_url = f"{IMAGE_BASE_URL}{poster_path}" if poster_path else None
 
+    # Construct JustWatch Search URL
+    # Simple search URL. For more precision, we'd need the JustWatch API or a mapping.
+    # Replacing spaces with '+' for the query.
+    jw_query = title.replace(" ", "+")
+    justwatch_link = f"https://www.justwatch.com/us/search?q={jw_query}"
+
+    # Construct Google Watchlist Search URL
+    # Query: "Title Year movie" to trigger the Knowledge Panel
+    gw_query = f"{title} {year} movie".replace(" ", "+") if year else f"{title} movie".replace(" ", "+")
+    google_watchlist_link = f"https://www.google.com/search?q={gw_query}"
+
     return {
         'watch_link': watch_link,
+        'justwatch_link': justwatch_link,
+        'google_watchlist_link': google_watchlist_link,
         'tmdb_id': movie_id,
         'poster_url': poster_url
     }
