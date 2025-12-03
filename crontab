@@ -1,0 +1,2 @@
+# Run at 10:00 UTC (which is 11:00 AM in +01:00 timezone)
+0 10 * * * python /app/fetch_from_api.py
