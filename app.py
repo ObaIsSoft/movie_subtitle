@@ -4,7 +4,7 @@ from flask import Flask, render_template, request, redirect, url_for, flash, jso
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import func
 from dotenv import load_dotenv
-from tmdb_client import get_movie_data
+from tmdb_client import get_movie_data, search_movie_metadata
 from srt_parser import parse_srt 
 import logging
 from flask_limiter import Limiter
@@ -19,8 +19,23 @@ app = Flask(__name__)
 
 # Configuration
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'super_secret_key')
-app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL').replace("postgres://", "postgresql://", 1) if os.getenv('DATABASE_URL') else None
+
+# Database URL — handles Supabase, Neon, Fly, and local Postgres
+database_url = os.getenv('DATABASE_URL', '')
+if database_url:
+    database_url = database_url.replace("postgres://", "postgresql://", 1)
+else:
+    raise RuntimeError("DATABASE_URL environment variable is not set.")
+
+app.config['SQLALCHEMY_DATABASE_URI'] = database_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+    "pool_pre_ping": True,       # Auto-reconnect if DB suspended the connection
+    "pool_recycle": 300,          # Recycle connections every 5 min
+    "connect_args": {
+        "sslmode": "require"      # Supabase/Neon require SSL
+    }
+}
 
 # Logging Configuration
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -181,13 +196,17 @@ def export_movies():
     return response
 
 @app.route('/add', methods=['GET', 'POST'])
-@app.route('/add', methods=['GET', 'POST'])
 def add_entry():
     if request.method == 'POST':
-        user_title = request.form.get('title').strip()
+        raw_title = request.form.get('title')
+        if not raw_title or not raw_title.strip():
+            flash('Movie title is required.', 'error')
+            return redirect(request.url)
+        user_title = raw_title.strip()
+
         try:
             user_year = int(request.form.get('year'))
-        except ValueError:
+        except (ValueError, TypeError):
             flash('Invalid year format.', 'error')
             return redirect(request.url)
         
@@ -202,7 +221,6 @@ def add_entry():
             return redirect(request.url)
 
         # --- Metadata Verification ---
-        from tmdb_client import search_movie_metadata
         verified_data = search_movie_metadata(user_title, user_year)
         
         if verified_data:
@@ -280,6 +298,20 @@ def add_entry():
             return redirect(request.url)
 
     return render_template('add.html')
+
+@app.route('/api/cron/fetch', methods=['POST'])
+def cron_fetch():
+    """Triggered by external cron service (cron-job.org) to fetch new movies."""
+    cron_secret = request.headers.get('X-Cron-Secret')
+    if not cron_secret or cron_secret != os.getenv('CRON_SECRET'):
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    try:
+        fetch_all_movies()
+        return jsonify({'status': 'ok'}), 200
+    except Exception as e:
+        logger.error(f"Cron fetch failed: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
     with app.app_context():

@@ -18,8 +18,7 @@ CONFIG = {
 
 # Check if credentials are present
 if not all(CONFIG.values()):
-    print("Error: OpenSubtitles credentials missing in .env file.")
-    sys.exit(1)
+    print("Warning: OpenSubtitles credentials missing in .env file. Auto-fetch disabled.")
 
 API_BASE_URL = "https://api.opensubtitles.com/api/v1"
 
