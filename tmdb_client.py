@@ -7,6 +7,7 @@ load_dotenv()
 API_KEY = os.getenv('TMDB_API_KEY')
 BASE_URL = "https://api.themoviedb.org/3"
 IMAGE_BASE_URL = "https://image.tmdb.org/t/p/w500" # Base URL for images
+REQUEST_TIMEOUT = 10 # seconds; never let a slow TMDB response hang a web worker
 
 import logging
 
@@ -18,7 +19,7 @@ def get_movie_data(title, year=None, country_code="NG"):
     """
     if not API_KEY:
         return {'watch_link': None, 'tmdb_id': None, 'poster_url': None}
-    
+
     # 1. Search for Movie
     search_url = f"{BASE_URL}/search/movie"
     params = {"api_key": API_KEY, "query": title}
@@ -27,34 +28,34 @@ def get_movie_data(title, year=None, country_code="NG"):
 
     movie_id = None
     poster_path = None
-    
+
     try:
-        response = requests.get(search_url, params=params)
+        response = requests.get(search_url, params=params, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
         data = response.json()
-        
+
         if data['results']:
             first_result = data['results'][0]
             movie_id = first_result['id']
             poster_path = first_result.get('poster_path')
         else:
             return {'watch_link': None, 'tmdb_id': None, 'poster_url': None}
-            
+
     except Exception as e:
         logger.error(f"Error finding movie: {e}")
         return {'watch_link': None, 'tmdb_id': None, 'poster_url': None}
 
     # 2. Get Watch Providers
     provider_url = f"{BASE_URL}/movie/{movie_id}/watch/providers"
-    
+
     watch_link = None
     try:
-        p_response = requests.get(provider_url, params={"api_key": API_KEY})
+        p_response = requests.get(provider_url, params={"api_key": API_KEY}, timeout=REQUEST_TIMEOUT)
         p_response.raise_for_status()
         p_data = p_response.json()
-        
+
         results = p_data.get('results', {})
-        
+
         if country_code in results:
             watch_link = results[country_code].get('link')
         elif 'US' in results:
@@ -90,8 +91,10 @@ def get_movie_data(title, year=None, country_code="NG"):
 
 def discover_popular_movies(year, page=1):
     """
-    Fetches popular movies for a specific year.
-    Returns a list of tuples: (imdb_id, title, year)
+    Fetches popular movies for a specific year (one TMDB page, up to 20 results).
+    Returns a list of tuples: (tmdb_id, title, year)
+    The discover endpoint doesn't include IMDb IDs; look them up with get_imdb_id()
+    only for the movies you actually need.
     """
     if not API_KEY:
         return []
@@ -110,32 +113,32 @@ def discover_popular_movies(year, page=1):
 
     movies = []
     try:
-        response = requests.get(url, params=params)
+        response = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
         data = response.json()
-        
+
         for result in data.get('results', []):
-            # We need to fetch details to get the IMDb ID
             movie_id = result.get('id')
-            if not movie_id: continue
-            
-            # Detail request to get IMDb ID (discover endpoint doesn't return it)
-            try:
-                detail_url = f"{BASE_URL}/movie/{movie_id}"
-                d_response = requests.get(detail_url, params={"api_key": API_KEY})
-                if d_response.status_code == 200:
-                    d_data = d_response.json()
-                    imdb_id = d_data.get('imdb_id')
-                    if imdb_id:
-                        movies.append((imdb_id, result.get('title'), year))
-            except Exception as e:
-                logger.error(f"Error fetching details for movie {movie_id}: {e}")
-                continue
+            if movie_id:
+                movies.append((movie_id, result.get('title'), year))
 
     except Exception as e:
         logger.error(f"Error discovering movies for year {year}: {e}")
-    
+
     return movies
+
+def get_imdb_id(tmdb_id):
+    """Looks up a movie's IMDb ID from its TMDB ID. Returns None if unavailable."""
+    if not API_KEY:
+        return None
+    try:
+        detail_url = f"{BASE_URL}/movie/{tmdb_id}"
+        d_response = requests.get(detail_url, params={"api_key": API_KEY}, timeout=REQUEST_TIMEOUT)
+        if d_response.status_code == 200:
+            return d_response.json().get('imdb_id')
+    except Exception as e:
+        logger.error(f"Error fetching details for movie {tmdb_id}: {e}")
+    return None
 
 def search_movie_metadata(query, year=None):
     """
@@ -146,12 +149,12 @@ def search_movie_metadata(query, year=None):
         return None
 
     search_url = f"{BASE_URL}/search/movie"
-    
+
     # First attempt: Search with year if provided
     if year:
         params = {"api_key": API_KEY, "query": query, "year": year}
         try:
-            response = requests.get(search_url, params=params)
+            response = requests.get(search_url, params=params, timeout=REQUEST_TIMEOUT)
             response.raise_for_status()
             data = response.json()
             if data['results']:
@@ -162,7 +165,7 @@ def search_movie_metadata(query, year=None):
     # Second attempt: Search without year (or if year search failed)
     params = {"api_key": API_KEY, "query": query}
     try:
-        response = requests.get(search_url, params=params)
+        response = requests.get(search_url, params=params, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
         data = response.json()
         if data['results']:
@@ -180,21 +183,10 @@ def _process_search_result(result):
     year = int(release_date.split('-')[0]) if release_date else None
     poster_path = result.get('poster_path')
     poster_url = f"{IMAGE_BASE_URL}{poster_path}" if poster_path else None
-    
-    # Fetch IMDb ID
-    imdb_id = None
-    try:
-        detail_url = f"{BASE_URL}/movie/{movie_id}"
-        d_response = requests.get(detail_url, params={"api_key": API_KEY})
-        if d_response.status_code == 200:
-            d_data = d_response.json()
-            imdb_id = d_data.get('imdb_id')
-    except Exception:
-        pass
 
     return {
         'title': title,
         'year': year,
-        'imdb_id': imdb_id,
+        'imdb_id': get_imdb_id(movie_id),
         'poster_url': poster_url
     }

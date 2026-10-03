@@ -254,6 +254,15 @@
         setTimeout(() => { window.location.href = targetUrl; }, 400);
     }
 
+    // Builds an element whose content is plain text. Quotes and titles come from uploaded
+    // files, so they must never be inserted with innerHTML.
+    function textEl(tag, className, text) {
+        const el = document.createElement(tag);
+        if (className) el.className = className;
+        el.textContent = text;
+        return el;
+    }
+
     // --- SEARCH HISTORY LOGIC ---
     function saveSearch(item) {
         if (!item) return;
@@ -299,16 +308,25 @@
             const icon = displayItem.type === 'quote' ? 'bi-quote' : 'bi-search';
             const iconColor = displayItem.type === 'quote' ? 'var(--accent-yellow)' : '#777';
 
-            div.innerHTML = `
-                <div class="history-icon-box">
-                    <i class="bi ${icon}" style="font-size: 1.5rem; color: ${iconColor};"></i>
-                </div>
-                <div class="history-info">
-                    <div class="history-title">${displayItem.display}</div>
-                    <div class="history-sub">${displayItem.sub}</div>
-                </div>
-                <i class="bi bi-chevron-right text-muted ms-2"></i>
-            `;
+            const iconBox = document.createElement('div');
+            iconBox.className = 'history-icon-box';
+            const iconEl = document.createElement('i');
+            iconEl.className = `bi ${icon}`;
+            iconEl.style.fontSize = '1.5rem';
+            iconEl.style.color = iconColor;
+            iconBox.appendChild(iconEl);
+
+            const info = document.createElement('div');
+            info.className = 'history-info';
+            info.append(
+                textEl('div', 'history-title', displayItem.display),
+                textEl('div', 'history-sub', displayItem.sub)
+            );
+
+            const chevron = document.createElement('i');
+            chevron.className = 'bi bi-chevron-right text-muted ms-2';
+
+            div.append(iconBox, info, chevron);
 
             div.addEventListener('click', function (e) {
                 e.stopPropagation(); // Prevent sheet toggle
@@ -316,7 +334,7 @@
                     triggerPageTransition(`/quote/${displayItem.value}`);
                 } else {
                     searchInput.value = displayItem.value;
-                    searchForm.submit();
+                    searchForm.requestSubmit(); // unlike submit(), runs the submit handler (history + loader)
                 }
             });
             historyContent.appendChild(div);
@@ -362,14 +380,14 @@
         const query = this.value;
         clearTimeout(debounceTimer);
 
-        if (query.length < 2) {
+        if (query.trim().length < 3) {
             suggestionsBox.style.display = 'none';
             return;
         }
 
         debounceTimer = setTimeout(() => {
             fetch(`/api/autocomplete?q=${encodeURIComponent(query)}`)
-                .then(response => response.json())
+                .then(response => response.ok ? response.json() : [])
                 .then(data => {
                     suggestionsBox.innerHTML = '';
                     suggestionsBox.style.display = 'none';
@@ -382,15 +400,20 @@
                                 div.className = 'autocomplete-item';
                                 div.style.animationDelay = `${index * 50}ms`;
 
-                                div.innerHTML = `
-                                    <div class="d-flex justify-content-between align-items-center">
-                                        <span>
-                                            <span style="color: var(--accent-yellow); font-weight: bold;">${item.movie}</span> 
-                                            <span class="small text-muted">(${item.year})</span>
-                                        </span>
-                                    </div>
-                                    <div class="small mt-1" style="color: #ccc;">"${item.text.substring(0, 60)}..."</div>
-                                `;
+                                const header = document.createElement('div');
+                                header.className = 'd-flex justify-content-between align-items-center';
+                                const label = document.createElement('span');
+                                const movieEl = textEl('span', '', item.movie);
+                                movieEl.style.color = 'var(--accent-yellow)';
+                                movieEl.style.fontWeight = 'bold';
+                                label.append(movieEl, ' ', textEl('span', 'small text-muted', `(${item.year})`));
+                                header.appendChild(label);
+
+                                const snippet = item.text.length > 60 ? `${item.text.substring(0, 60)}...` : item.text;
+                                const quoteEl = textEl('div', 'small mt-1', `"${snippet}"`);
+                                quoteEl.style.color = '#ccc';
+
+                                div.append(header, quoteEl);
 
                                 div.addEventListener('click', function () {
                                     // Save rich object to history

@@ -1,0 +1,20 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<div class="p-4 p-md-5 mx-auto mt-3 mt-lg-5" style="max-width: 400px; background-color: var(--bg-dark-grey); border: 1px solid #333;">
+    <h2 class="text-center mb-4"><i class="bi bi-lock-fill" style="color: var(--accent-yellow);"></i> Admin Login</h2>
+
+    <form method="POST" action="{{ url_for('login') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <div class="mb-3">
+            <label class="form-label" style="color: var(--text-grey); font-weight: 600; text-transform: uppercase; font-size: 0.8rem;">Username</label>
+            <input type="text" name="username" class="form-control" required autofocus>
+        </div>
+        <div class="mb-4">
+            <label class="form-label" style="color: var(--text-grey); font-weight: 600; text-transform: uppercase; font-size: 0.8rem;">Password</label>
+            <input type="password" name="password" class="form-control" required>
+        </div>
+        <button type="submit" class="btn btn-primary w-100">Access Database</button>
+    </form>
+</div>
+{% endblock %}

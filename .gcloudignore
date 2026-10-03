@@ -1,0 +1,8 @@
+# Files not uploaded by `gcloud run deploy --source .`
+# Keep the .gitignore include: it keeps .env (secrets) out of the upload.
+.gcloudignore
+.git
+.gitignore
+#!include:.gitignore
+.venv
+tests

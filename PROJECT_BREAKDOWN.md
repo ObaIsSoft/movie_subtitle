@@ -614,7 +614,7 @@ This pauses execution for 2 seconds between each movie download. Why? Because if
 
 ```python
 # ❌ NEVER DO THIS
-API_KEY = "***REMOVED***"
+API_KEY = "abc123-your-real-key-here"
 ```
 
 Anyone who sees your code (GitHub, a screenshot, a colleague) gets your keys.
@@ -628,7 +628,7 @@ API_KEY = os.getenv("OPENSUBTITLES_API_KEY")
 
 The actual value lives in the `.env` file, which is excluded from Git via `.gitignore`.
 
-**For production (Fly.io):** You use `fly secrets set` to store secrets on the server. They're encrypted and never visible in your code or repository.
+**For production (Cloud Run):** Secrets are set as environment variables on the Cloud Run service (ideally backed by Secret Manager). They're encrypted and never visible in your code or repository.
 
 **Analogy:** Your code is a recipe that says "add salt to taste." The `.env` file is your actual salt shaker. You share the recipe with everyone, but you keep your salt shaker in your own kitchen.
 

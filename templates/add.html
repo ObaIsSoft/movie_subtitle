@@ -6,7 +6,8 @@
         <h2 class="text-center mb-4 mb-lg-5">UPLOAD SUBTITLE FILE</h2>
         
         <form method="POST" enctype="multipart/form-data" class="p-4 p-lg-5" style="background-color: var(--bg-dark-grey); border: 1px solid #333;">
-            
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
             <!-- Movie Info -->
             <div class="mb-4">
                 <label class="form-label small text-uppercase fw-bold" style="color: var(--accent-yellow);">Movie Title</label>

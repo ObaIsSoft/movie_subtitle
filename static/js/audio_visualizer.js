@@ -131,7 +131,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (isRecording) {
                 if (searchInput.value && searchInput.value.trim() !== "") {
                     stopRecordingUI();
-                    searchForm.submit();
+                    searchForm.requestSubmit(); // runs the page's submit handler (history + loader)
                 } else {
                     stopRecording();
                     statusText.innerText = "Tap mic to try again";
@@ -184,8 +184,10 @@ document.addEventListener('DOMContentLoaded', () => {
         formData.append('audio', audioBlob, `recording.${extension}`);
 
         try {
+            const csrfToken = document.querySelector('meta[name="csrf-token"]').content;
             const response = await fetch('/api/transcribe', {
                 method: 'POST',
+                headers: { 'X-CSRFToken': csrfToken },
                 body: formData
             });
             const data = await response.json();
@@ -193,7 +195,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (data.text) {
                 stopRecordingUI();
                 searchInput.value = data.text;
-                searchForm.submit();
+                searchForm.requestSubmit();
             } else {
                 statusText.innerText = "Try Again";
             }

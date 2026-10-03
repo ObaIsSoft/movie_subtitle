@@ -1,24 +1,37 @@
+import hmac
 import os
 import tempfile
-from flask import Flask, render_template, request, redirect, url_for, flash, jsonify
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, abort
 from flask_sqlalchemy import SQLAlchemy
-from sqlalchemy import func
+from flask_wtf.csrf import CSRFProtect, CSRFError
+from sqlalchemy import func, or_, and_, literal_column
+from sqlalchemy.exc import SQLAlchemyError
+from werkzeug.middleware.proxy_fix import ProxyFix
 from dotenv import load_dotenv
 from tmdb_client import get_movie_data, search_movie_metadata
-from srt_parser import parse_srt 
+from srt_parser import parse_srt, decode_srt_bytes
 import logging
 from flask_limiter import Limiter
-from flask_limiter.util import get_remote_address 
-from openai import OpenAI 
+from flask_limiter.util import get_remote_address
+from openai import OpenAI
 
-from fetch_from_api import fetch_all_movies 
+from fetch_from_api import fetch_all_movies
 
 load_dotenv()
 
 app = Flask(__name__)
 
+# Cloud Run sits behind Google's front end. Trust one proxy hop so request.remote_addr
+# is the real client IP (the rate limiter keys on it) and redirects keep https.
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
+
 # Configuration
-app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'super_secret_key')
+app.config['SECRET_KEY'] = os.getenv('SECRET_KEY')
+if not app.config['SECRET_KEY']:
+    raise RuntimeError("SECRET_KEY environment variable is not set.")
+
+# Largest accepted request body (.srt uploads, voice clips). Bigger requests get a 413.
+app.config['MAX_CONTENT_LENGTH'] = 5 * 1024 * 1024
 
 # Database URL — handles Supabase, Neon, Fly, and local Postgres
 database_url = os.getenv('DATABASE_URL', '')
@@ -33,7 +46,8 @@ app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
     "pool_pre_ping": True,       # Auto-reconnect if DB suspended the connection
     "pool_recycle": 300,          # Recycle connections every 5 min
     "connect_args": {
-        "sslmode": "require"      # Supabase/Neon require SSL
+        # Supabase/Neon require SSL; set DB_SSLMODE=disable for a local Postgres without SSL
+        "sslmode": os.getenv('DB_SSLMODE', 'require')
     }
 }
 
@@ -43,17 +57,34 @@ logger = logging.getLogger(__name__)
 
 db = SQLAlchemy(app)
 
-# Rate Limiter
+# Rate Limiter (limits apply per client IP, per route).
+# memory:// is per instance; point RATELIMIT_STORAGE_URI at Redis to share limits across instances.
 limiter = Limiter(
     get_remote_address,
     app=app,
-    default_limits=["200 per day", "50 per hour"],
-    storage_uri="memory://"
+    default_limits=["2000 per day", "300 per hour"],
+    storage_uri=os.getenv('RATELIMIT_STORAGE_URI', 'memory://')
 )
 
-# OpenAI Client
-openai_client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+# CSRF protection for every POST form; JS requests send the token in an X-CSRFToken header
+csrf = CSRFProtect(app)
 
+# OpenAI client is created on first use so the app still boots without OPENAI_API_KEY
+_openai_client = None
+
+def get_openai_client():
+    global _openai_client
+    if _openai_client is None and os.getenv('OPENAI_API_KEY'):
+        _openai_client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+    return _openai_client
+
+# 'simple' text-search config: no stemming and no stop-word removal, so quotes made of
+# common words ("to be or not to be") still match. Must match ix_subtitle_text_fts.
+FTS_CONFIG = literal_column("'simple'::regconfig")
+
+def escape_like(value):
+    """Escape LIKE wildcards so user input is matched literally."""
+    return value.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
 
 
 # --- Models ---
@@ -70,10 +101,11 @@ class Movie(db.Model):
 
 class Subtitle(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    text = db.Column(db.String(500), nullable=False, index=True) # Added index for performance
+    # Search indexes (full-text + trigram) live in migrations/001_search_indexes.sql
+    text = db.Column(db.Text, nullable=False)
     start_time = db.Column(db.String(20), nullable=True)
     end_time = db.Column(db.String(20), nullable=True)
-    movie_id = db.Column(db.Integer, db.ForeignKey('movie.id'), nullable=False)
+    movie_id = db.Column(db.Integer, db.ForeignKey('movie.id'), nullable=False, index=True)
 
     def __repr__(self):
         return f'<Subtitle {self.text[:20]}...>'
@@ -91,14 +123,16 @@ class AppSettings(db.Model):
 def index():
     query = request.args.get('q')
     if query:
-        # Smart Dictionary Search: Full-Text Search (FTS) with Ranking
-        ts_query = func.websearch_to_tsquery('english', query)
-        ts_vector = func.to_tsvector('english', Subtitle.text)
-        
+        # Full-Text Search: every word must appear; lines containing the exact phrase rank first
+        ts_query = func.plainto_tsquery(FTS_CONFIG, query)
+        ts_vector = func.to_tsvector(FTS_CONFIG, Subtitle.text)
+        exact_phrase = Subtitle.text.ilike(f'%{escape_like(query.strip())}%')
+
         subtitles = Subtitle.query.join(Movie).filter(
             ts_vector.op('@@')(ts_query),
             Movie.is_approved == True
         ).order_by(
+            exact_phrase.desc(),
             func.ts_rank_cd(ts_vector, ts_query).desc()
         ).limit(100).all()
     else:
@@ -109,6 +143,8 @@ def index():
 def quote_detail(subtitle_id):
     subtitle = Subtitle.query.get_or_404(subtitle_id)
     movie = subtitle.movie
+    if not movie.is_approved:
+        abort(404)  # pending uploads stay hidden until approved
     tmdb_data = get_movie_data(movie.title, movie.year, country_code="NG")
     
     # Fetch Context (Previous and Next lines)
@@ -126,14 +162,15 @@ def quote_detail(subtitle_id):
                          poster_url=tmdb_data.get('poster_url'))
 
 @app.route('/api/autocomplete')
+@limiter.limit("60 per minute")  # fires while typing, so it gets its own, higher limit
 def autocomplete():
-    q = request.args.get('q', '')
-    if not q or len(q) < 2:
+    q = request.args.get('q', '').strip()
+    if len(q) < 3:  # the trigram index needs at least 3 characters
         return jsonify([])
-    
+
     # Improved Autocomplete: Join with Movie to return correct title, filter by approved
     results = db.session.query(Subtitle, Movie).join(Movie).filter(
-        Subtitle.text.ilike(f'%{q}%'),
+        Subtitle.text.ilike(f'%{escape_like(q)}%'),
         Movie.is_approved == True
     ).limit(5).all()
     
@@ -157,45 +194,45 @@ def transcribe_audio():
     if audio_file.filename == '':
         return jsonify({'error': 'No selected file'}), 400
 
+    openai_client = get_openai_client()
+    if openai_client is None:
+        return jsonify({'error': 'Voice transcription is not configured'}), 503
+
+    # Save to a temporary file
+    suffix = ".webm"
+    if audio_file.filename.endswith('.mp4'): suffix = ".mp4"
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_audio:
+        audio_file.save(temp_audio.name)
+        temp_path = temp_audio.name
+
     try:
-        # Save to a temporary file
-        suffix = ".webm"
-        if audio_file.filename.endswith('.mp4'): suffix = ".mp4"
-        
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_audio:
-            audio_file.save(temp_audio.name)
-            temp_path = temp_audio.name
-        
         file_size = os.path.getsize(temp_path)
-        logger.info(f"Received audio file: {audio_file.filename}, Size: {file_size} bytes, Path: {temp_path}")
+        logger.info(f"Received audio file: {audio_file.filename}, Size: {file_size} bytes")
 
         if file_size == 0:
-            os.remove(temp_path)
             return jsonify({'error': 'Empty audio file'}), 400
 
         with open(temp_path, "rb") as audio_file_obj:
             logger.info("Sending to OpenAI Whisper...")
             transcript = openai_client.audio.transcriptions.create(
-                model="whisper-1", 
+                model="whisper-1",
                 file=audio_file_obj
             )
-        
-        # Cleanup
-        os.remove(temp_path)
-        
+
         text = transcript.text.strip()
         logger.info(f"Transcription success: '{text}'")
-        
+
         # Remove trailing punctuation for better search
         if text.endswith('.'): text = text[:-1]
-        
+
         return jsonify({'text': text})
 
     except Exception as e:
         logger.error(f"Transcription error: {str(e)}", exc_info=True)
-        if 'temp_path' in locals() and os.path.exists(temp_path):
-            os.remove(temp_path)
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': 'Transcription failed. Please try again.'}), 500
+    finally:
+        os.remove(temp_path)
 
 @app.route('/api/export_movies')
 def export_movies():
@@ -231,6 +268,16 @@ def add_entry():
             flash('No selected file', 'error')
             return redirect(request.url)
 
+        if not file.filename.lower().endswith('.srt'):
+            flash('Invalid file format. Please upload a .srt file.', 'error')
+            return redirect(request.url)
+
+        parsed_subs = parse_srt(decode_srt_bytes(file.read()))
+
+        if not parsed_subs:
+            flash('Could not parse subtitles. The file format might be incorrect or empty.', 'error')
+            return redirect(request.url)
+
         # --- Metadata Verification ---
         verified_data = search_movie_metadata(user_title, user_year)
         
@@ -249,95 +296,90 @@ def add_entry():
             imdb_id = None
             flash(f"Could not verify metadata. Using '{movie_title}' ({movie_year}) as entered.", 'warning')
 
-        # Case-insensitive check for existing movie with same year
-        existing_movie = Movie.query.filter(
-            func.lower(Movie.title) == func.lower(movie_title),
-            Movie.year == movie_year
-        ).first()
-        
+        # Already in the database (live or awaiting review)? Match on IMDb ID or title + year.
+        duplicate_checks = [and_(func.lower(Movie.title) == func.lower(movie_title), Movie.year == movie_year)]
+        if imdb_id:
+            duplicate_checks.append(Movie.imdb_id == imdb_id)
+        existing_movie = Movie.query.filter(or_(*duplicate_checks)).first()
+
         if existing_movie:
-            flash(f"Subtitles for '{existing_movie.title}' ({existing_movie.year}) are already in the database.", 'info')
+            if existing_movie.is_approved:
+                flash(f"Subtitles for '{existing_movie.title}' ({existing_movie.year}) are already in the database.", 'info')
+            else:
+                flash(f"'{existing_movie.title}' ({existing_movie.year}) was already submitted and is awaiting review.", 'info')
             return redirect(url_for('index'))
 
-        if not file.filename.lower().endswith('.srt'):
-            flash('Invalid file format. Please upload a .srt file.', 'error')
-            return redirect(request.url)
-
-        content = ""
         try:
-            content = file.read().decode('utf-8')
-        except UnicodeDecodeError:
-            try:
-                file.seek(0) 
-                content = file.read().decode('latin-1')
-            except Exception as e:
-                flash(f'Encoding error: {str(e)}', 'error')
-                return redirect(request.url)
-
-        parsed_subs = parse_srt(content)
-        
-        if not parsed_subs:
-            flash('Could not parse subtitles. The file format might be incorrect or empty.', 'error')
-            return redirect(request.url)
-
-        try:
-            # Create new movie (is_approved=False by default for community uploads)
-            new_movie = Movie(title=movie_title, year=movie_year, imdb_id=imdb_id)
+            # Movie and all its lines are saved in one transaction, so a failure leaves nothing behind.
+            # is_approved=False by default for community uploads.
+            new_movie = Movie(title=movie_title, year=movie_year, imdb_id=imdb_id, subtitles=[
+                Subtitle(text=sub_data['text'], start_time=sub_data['start'], end_time=sub_data['end'])
+                for sub_data in parsed_subs
+            ])
             db.session.add(new_movie)
             db.session.commit()
-            movie_id = new_movie.id
-            flash(f"Submitted new movie: {movie_title} ({movie_year}) for admin approval!", 'success')
-            
-            new_subs = []
-            for sub_data in parsed_subs:
-                new_subs.append(Subtitle(
-                    text=sub_data['text'],
-                    start_time=sub_data['start'],
-                    end_time=sub_data['end'],
-                    movie_id=movie_id # Explicitly link using ID
-                ))
-            
-            db.session.add_all(new_subs)
-            db.session.commit()
-            
-            flash(f'Successfully imported {len(parsed_subs)} lines for "{movie_title}"!', 'success')
-            return redirect(url_for('index'))
-            
-        except Exception as e:
+        except SQLAlchemyError:
             db.session.rollback()
-            flash(f'Database error: {str(e)}', 'error')
+            logger.error("Failed to save upload", exc_info=True)
+            flash('Something went wrong saving your upload. Please try again.', 'error')
             return redirect(request.url)
+
+        flash(f'Submitted {len(parsed_subs)} lines for "{movie_title}" ({movie_year}). They will go live after admin approval.', 'success')
+        return redirect(url_for('index'))
 
     return render_template('add.html')
 
 # --- Admin Routes ---
 from functools import wraps
-from flask import request, Response
+from flask import request, session
 
 def check_auth(username, password):
     admin_user = os.getenv('ADMIN_USER', 'admin')
-    admin_pass = os.getenv('ADMIN_PASS', 'quoted123')
-    return username == admin_user and password == admin_pass
-
-def authenticate():
-    return Response(
-    'Could not verify your access level for that URL.\n'
-    'You have to login with proper credentials', 401,
-    {'WWW-Authenticate': 'Basic realm="Login Required"'})
+    admin_pass = os.getenv('ADMIN_PASS')
+    if not admin_pass or not username or not password:
+        return False  # no default password: admin login stays disabled until ADMIN_PASS is set
+    user_ok = hmac.compare_digest(username.encode(), admin_user.encode())
+    pass_ok = hmac.compare_digest(password.encode(), admin_pass.encode())
+    return user_ok and pass_ok
 
 def requires_auth(f):
     @wraps(f)
     def decorated(*args, **kwargs):
-        auth = request.authorization
-        if not auth or not check_auth(auth.username, auth.password):
-            return authenticate()
+        if not session.get('admin_logged_in'):
+            flash('Please log in to access the admin panel.', 'warning')
+            return redirect(url_for('login'))
         return f(*args, **kwargs)
     return decorated
+
+@app.route('/login', methods=['GET', 'POST'])
+@limiter.limit("10 per minute", methods=['POST'])  # slow down password guessing
+def login():
+    if request.method == 'POST':
+        username = request.form.get('username')
+        password = request.form.get('password')
+        if check_auth(username, password):
+            session['admin_logged_in'] = True
+            flash('Welcome to the Moderation Queue!', 'success')
+            return redirect(url_for('admin_panel'))
+        elif not os.getenv('ADMIN_PASS'):
+            flash('Admin login is disabled: set the ADMIN_PASS environment variable.', 'error')
+        else:
+            flash('Invalid username or password.', 'error')
+    return render_template('login.html')
+
+@app.route('/logout')
+def logout():
+    session.pop('admin_logged_in', None)
+    flash('You have been logged out.', 'info')
+    return redirect(url_for('index'))
 
 @app.route('/admin')
 @requires_auth
 def admin_panel():
-    pending_movies = Movie.query.filter_by(is_approved=False).all()
+    # (movie, line_count) pairs, counted in SQL instead of loading every subtitle row
+    pending_movies = db.session.query(Movie, func.count(Subtitle.id)).outerjoin(Subtitle).filter(
+        Movie.is_approved == False
+    ).group_by(Movie.id).order_by(Movie.id).all()
     return render_template('admin.html', movies=pending_movies)
 
 @app.route('/admin/approve/<int:movie_id>', methods=['POST'])
@@ -353,24 +395,49 @@ def approve_movie(movie_id):
 @requires_auth
 def delete_movie(movie_id):
     movie = Movie.query.get_or_404(movie_id)
+    title = movie.title
+    # Delete the lines in one statement instead of loading and deleting them one by one
+    Subtitle.query.filter_by(movie_id=movie.id).delete(synchronize_session=False)
     db.session.delete(movie)
     db.session.commit()
-    flash(f"Deleted {movie.title}!", 'success')
+    flash(f"Deleted {title}!", 'success')
     return redirect(url_for('admin_panel'))
 
 @app.route('/api/cron/fetch', methods=['POST'])
+@csrf.exempt
+@limiter.exempt
 def cron_fetch():
-    """Triggered by external cron service (cron-job.org) to fetch new movies."""
-    cron_secret = request.headers.get('X-Cron-Secret')
-    if not cron_secret or cron_secret != os.getenv('CRON_SECRET'):
+    """Triggered daily by Cloud Scheduler (job: quoted-daily-fetch) to fetch new movies."""
+    cron_secret = request.headers.get('X-Cron-Secret', '')
+    expected_secret = os.getenv('CRON_SECRET', '')
+    if not expected_secret or not hmac.compare_digest(cron_secret.encode(), expected_secret.encode()):
         return jsonify({'error': 'Unauthorized'}), 401
 
     try:
-        fetch_all_movies()
-        return jsonify({'status': 'ok'}), 200
+        # Stop well inside Cloud Scheduler's 180s attempt deadline. Progress is saved,
+        # so the next run resumes where this one stopped.
+        budget = int(os.getenv('FETCH_TIME_BUDGET_SECONDS', '150'))
+        summary = fetch_all_movies(time_budget_seconds=budget)
+        return jsonify({'status': 'ok', **summary}), 200
     except Exception as e:
         logger.error(f"Cron fetch failed: {e}", exc_info=True)
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': 'Fetch failed; see server logs'}), 500
+
+# --- Error Handlers ---
+
+@app.errorhandler(413)
+def request_too_large(e):
+    if request.path.startswith('/api/'):
+        return jsonify({'error': 'File too large (max 5 MB)'}), 413
+    flash('File too large. The maximum upload size is 5 MB.', 'error')
+    return redirect(request.url)
+
+@app.errorhandler(CSRFError)
+def csrf_error(e):
+    if request.path.startswith('/api/'):
+        return jsonify({'error': 'Session expired. Please reload the page.'}), 400
+    flash('Your session expired. Please try again.', 'error')
+    return redirect(url_for('admin_panel') if request.path.startswith('/admin') else request.url)
 
 if __name__ == '__main__':
     with app.app_context():
