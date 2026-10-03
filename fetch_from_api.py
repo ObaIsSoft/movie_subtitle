@@ -88,7 +88,7 @@ def fetch_movie_subtitles(session, token, imdb_id, movie_title, movie_year):
         parsed_subtitles = parse_srt(srt_content)
         if not parsed_subtitles: return False
             
-        new_movie = Movie(title=movie_title, year=movie_year, imdb_id=imdb_id)
+        new_movie = Movie(title=movie_title, year=movie_year, imdb_id=imdb_id, is_approved=True)
         db.session.add(new_movie)
         db.session.commit() 
         

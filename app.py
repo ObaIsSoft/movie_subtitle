@@ -62,6 +62,7 @@ class Movie(db.Model):
     title = db.Column(db.String(200), nullable=False)
     year = db.Column(db.Integer)
     imdb_id = db.Column(db.String(20), unique=True, nullable=True)
+    is_approved = db.Column(db.Boolean, default=False, server_default="false", nullable=False)
     subtitles = db.relationship('Subtitle', backref='movie', lazy=True, cascade="all, delete-orphan")
 
     def __repr__(self):
@@ -90,9 +91,16 @@ class AppSettings(db.Model):
 def index():
     query = request.args.get('q')
     if query:
-        # Robust search: Filter subtitles where text matches query
-        # We use a join to ensure the movie relationship is valid (though backref usually handles this)
-        subtitles = Subtitle.query.join(Movie).filter(Subtitle.text.ilike(f'%{query}%')).limit(100).all()
+        # Smart Dictionary Search: Full-Text Search (FTS) with Ranking
+        ts_query = func.websearch_to_tsquery('english', query)
+        ts_vector = func.to_tsvector('english', Subtitle.text)
+        
+        subtitles = Subtitle.query.join(Movie).filter(
+            ts_vector.op('@@')(ts_query),
+            Movie.is_approved == True
+        ).order_by(
+            func.ts_rank_cd(ts_vector, ts_query).desc()
+        ).limit(100).all()
     else:
         subtitles = [] 
     return render_template('index.html', subtitles=subtitles, query=query)
@@ -123,8 +131,11 @@ def autocomplete():
     if not q or len(q) < 2:
         return jsonify([])
     
-    # Improved Autocomplete: Join with Movie to return correct title
-    results = db.session.query(Subtitle, Movie).join(Movie).filter(Subtitle.text.ilike(f'%{q}%')).limit(5).all()
+    # Improved Autocomplete: Join with Movie to return correct title, filter by approved
+    results = db.session.query(Subtitle, Movie).join(Movie).filter(
+        Subtitle.text.ilike(f'%{q}%'),
+        Movie.is_approved == True
+    ).limit(5).all()
     
     suggestions = []
     for sub, movie in results:
@@ -188,7 +199,7 @@ def transcribe_audio():
 
 @app.route('/api/export_movies')
 def export_movies():
-    movies = Movie.query.all()
+    movies = Movie.query.filter_by(is_approved=True).all()
     movie_list = [{'title': m.title, 'year': m.year} for m in movies]
     
     response = jsonify(movie_list)
@@ -270,12 +281,12 @@ def add_entry():
             return redirect(request.url)
 
         try:
-            # Create new movie
+            # Create new movie (is_approved=False by default for community uploads)
             new_movie = Movie(title=movie_title, year=movie_year, imdb_id=imdb_id)
             db.session.add(new_movie)
             db.session.commit()
             movie_id = new_movie.id
-            flash(f"Added new movie: {movie_title} ({movie_year})", 'success')
+            flash(f"Submitted new movie: {movie_title} ({movie_year}) for admin approval!", 'success')
             
             new_subs = []
             for sub_data in parsed_subs:
@@ -298,6 +309,54 @@ def add_entry():
             return redirect(request.url)
 
     return render_template('add.html')
+
+# --- Admin Routes ---
+from functools import wraps
+from flask import request, Response
+
+def check_auth(username, password):
+    admin_user = os.getenv('ADMIN_USER', 'admin')
+    admin_pass = os.getenv('ADMIN_PASS', 'quoted123')
+    return username == admin_user and password == admin_pass
+
+def authenticate():
+    return Response(
+    'Could not verify your access level for that URL.\n'
+    'You have to login with proper credentials', 401,
+    {'WWW-Authenticate': 'Basic realm="Login Required"'})
+
+def requires_auth(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        auth = request.authorization
+        if not auth or not check_auth(auth.username, auth.password):
+            return authenticate()
+        return f(*args, **kwargs)
+    return decorated
+
+@app.route('/admin')
+@requires_auth
+def admin_panel():
+    pending_movies = Movie.query.filter_by(is_approved=False).all()
+    return render_template('admin.html', movies=pending_movies)
+
+@app.route('/admin/approve/<int:movie_id>', methods=['POST'])
+@requires_auth
+def approve_movie(movie_id):
+    movie = Movie.query.get_or_404(movie_id)
+    movie.is_approved = True
+    db.session.commit()
+    flash(f"Approved {movie.title}!", 'success')
+    return redirect(url_for('admin_panel'))
+
+@app.route('/admin/delete/<int:movie_id>', methods=['POST'])
+@requires_auth
+def delete_movie(movie_id):
+    movie = Movie.query.get_or_404(movie_id)
+    db.session.delete(movie)
+    db.session.commit()
+    flash(f"Deleted {movie.title}!", 'success')
+    return redirect(url_for('admin_panel'))
 
 @app.route('/api/cron/fetch', methods=['POST'])
 def cron_fetch():

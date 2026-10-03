@@ -45,9 +45,19 @@ def parse_srt(srt_content):
                 # Remove HTML tags
                 clean_text = re.sub(r'<[^>]+>', '', full_text).strip()
                 
-                # Clean up common subtitle artifacts
-                clean_text = clean_text.replace('- ', '').strip()
+                # JUNK FILTER: Remove [music playing], (sighs), etc.
+                clean_text = re.sub(r'\[.*?\]|\(.*?\)', '', clean_text)
                 
+                # JUNK FILTER: Remove speaker labels like "JOHN:" or "MAN 1:"
+                clean_text = re.sub(r'^[A-Z0-9\s]+:\s*', '', clean_text)
+                
+                # Clean up common subtitle artifacts
+                clean_text = clean_text.replace('- ', '').replace('\"', '').strip()
+                
+                # JUNK FILTER: Discard lines with less than 3 words (e.g. "Yes.", "Okay.")
+                if len(clean_text.split()) < 3:
+                    continue
+                    
                 if clean_text:
                     parsed_subs.append({
                         'start': start,
